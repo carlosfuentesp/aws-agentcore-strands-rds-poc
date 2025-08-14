@@ -1,208 +1,183 @@
 #!/usr/bin/env python3
-import os, sys, json, uuid, argparse, subprocess, shlex
-from typing import Optional
+
+import os
+import sys
+import json
+import time
+import uuid
 from pathlib import Path
+from typing import Optional
 
-import boto3
-from botocore.config import Config
+repo_root = Path(__file__).parent.parent
+env_path = repo_root / ".env"
 
-# --- cargar .env robusto (raíz del repo o búsqueda ascendente) ---
-try:
-    from dotenv import load_dotenv, find_dotenv
-    repo_root = Path(__file__).resolve().parents[1]
-    env_path = repo_root / ".env"
-    loaded = False
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=False)
-        loaded = True
-    if not loaded:
-        load_dotenv(find_dotenv(usecwd=True), override=False)
-except Exception:
-    pass
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_path)
 
-REGION = os.getenv("AWS_REGION", "us-east-1")
-AGENT_ARN = os.getenv("AGENT_RUNTIME_ARN")
+AGENT_RUNTIME_ARN = os.getenv("AGENT_RUNTIME_ARN")
+AGENT_NAME = os.getenv("AGENT_NAME", "saldo_agent")
 
-# Fallback: resolver ARN por nombre si falta
-if not AGENT_ARN:
-    AGENT_NAME = os.getenv("AGENT_NAME", "saldo_agent")
+if not AGENT_RUNTIME_ARN:
     try:
-        cmd = (
-            f"aws bedrock-agentcore-control list-agent-runtimes "
-            f"--region {REGION} "
-            f"--query \"agentRuntimes[?agentRuntimeName=='{AGENT_NAME}'].agentRuntimeArn\" "
-            f"--output text"
-        )
-        out = subprocess.check_output(shlex.split(cmd), text=True).strip()
-        if out and out != "None":
-            AGENT_ARN = out
-    except Exception:
-        pass
+        import boto3
+        client = boto3.client("bedrock-agentcore-control")
+        response = client.list_agent_runtimes()
+        
+        for runtime in response["agentRuntimes"]:
+            if runtime["agentRuntimeName"] == AGENT_NAME:
+                AGENT_RUNTIME_ARN = runtime["agentRuntimeArn"]
+                break
+    except Exception as e:
+        print(f"Error resolviendo ARN: {e}", file=sys.stderr)
 
-if not AGENT_ARN:
+if not AGENT_RUNTIME_ARN:
     print("ERROR: Falta AGENT_RUNTIME_ARN (.env) y no se pudo resolver por nombre (AGENT_NAME).", file=sys.stderr)
     sys.exit(1)
 
-client = boto3.client("bedrock-agentcore", region_name=REGION, config=Config(retries={"max_attempts": 3}))
+import boto3
 
-def _extract_text_from_json(obj: dict) -> Optional[str]:
-    """Extrae texto de respuestas JSON comunes del runtime."""
-    res = obj.get("result", obj.get("message", obj))
-    if isinstance(res, dict):
-        # {"result":{"content":[{"text":"..."}]}}
-        cont = res.get("content")
-        if isinstance(cont, list):
-            texts = [c.get("text") for c in cont if isinstance(c, dict) and c.get("text")]
-            if texts:
-                return "\n".join(texts)
-        # {"result":{"message":{"content":[...]}}}
-        msg = res.get("message")
-        if isinstance(msg, dict) and isinstance(msg.get("content"), list):
-            texts = [c.get("text") for c in msg["content"] if isinstance(c, dict) and c.get("text")]
-            if texts:
-                return "\n".join(texts)
-    if isinstance(res, str):
-        return res
-    # fallback: algunos retornan directamente {"text": "..."}
-    if obj.get("text"):
-        return obj["text"]
-    return None
+client = boto3.client("bedrock-agentcore-runtime")
 
-def invoke_agent(prompt: str, session_id: str, want_stream: bool) -> str:
-    payload = json.dumps({"prompt": prompt}).encode("utf-8")
-    kwargs = dict(agentRuntimeArn=AGENT_ARN, runtimeSessionId=session_id, payload=payload)
-    kwargs["accept"] = "text/event-stream" if want_stream else "application/json"
+def chat_with_agent(prompt: str, session_id: Optional[str] = None) -> None:
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    if len(session_id) < 33:
+        session_id = session_id + "x" * (33 - len(session_id))
+    
+    try:
+        response = client.converse(
+            agentId=AGENT_RUNTIME_ARN,
+            sessionId=session_id,
+            input={
+                "text": prompt
+            }
+        )
+        
+        if "completion" in response:
+            print(f"\n{response['completion']['text']}")
+        else:
+            print(f"\nRespuesta inesperada: {json.dumps(response, indent=2)}")
+            
+    except Exception as e:
+        print(f"Error en chat: {e}")
+        return None
+    
+    return session_id
 
-    resp = client.invoke_agent_runtime(**kwargs)
-
-    # Si el servicio no devolvió SSE aunque lo pedimos, caemos a JSON
-    ctype = (resp.get("contentType") or "").lower()
-    is_sse = ctype.startswith("text/event-stream")
-
-    if not is_sse:
-        chunks = []
-        for part in resp.get("response", []):
-            if isinstance(part, (bytes, bytearray)):
-                chunks.append(part.decode("utf-8", "ignore"))
-            else:
-                chunks.append(str(part))
-        body_raw = "".join(chunks)
-        try:
-            body = json.loads(body_raw)
-        except Exception:
-            return body_raw
-        text = _extract_text_from_json(body)
-        return text or json.dumps(body, ensure_ascii=False)
-
-    # --- Streaming SSE ---
-    out = []
-    stream = resp["response"]
-    for line in stream.iter_lines():
-        if not line:
-            continue
-        s = line.decode("utf-8", "ignore")
-        if s.startswith("data: "):
-            s = s[6:]
-
-        # Algunas líneas pueden ser "event: ..." o keep-alives; ignorarlas
-        if not s or s.startswith(":") or s.startswith("event:"):
-            continue
-
-        try:
-            evt = json.loads(s)
-        except Exception:
-            # imprime crudo si no es JSON
-            print(s)
-            continue
-
-        printed = False
-
-        # 1) Campos sencillos
-        for key in ("text", "delta"):
-            val = evt.get(key)
-            if isinstance(val, str) and val:
-                print(val, end="", flush=True)
-                out.append(val)
-                printed = True
-                break
-
-        if printed:
-            continue
-
-        # 2) Estructura ConverseStream: contentBlockDelta.delta (string o {"text": ...})
-        cbd = evt.get("contentBlockDelta")
-        if isinstance(cbd, dict):
-            d = cbd.get("delta")
-            if isinstance(d, str) and d:
-                print(d, end="", flush=True); out.append(d); printed = True
-            elif isinstance(d, dict) and isinstance(d.get("text"), str):
-                print(d["text"], end="", flush=True); out.append(d["text"]); printed = True
-            if printed:
-                continue
-
-        # 3) Mensajes completos en un solo evento
-        msg = evt.get("message")
-        if isinstance(msg, dict) and isinstance(msg.get("content"), list):
-            texts = [c.get("text") for c in msg["content"] if isinstance(c, dict) and c.get("text")]
-            if texts:
-                t = "".join(texts)
-                print(t, end="", flush=True); out.append(t); printed = True
-
-        # 4) Último recurso: result -> content[].text
-        if not printed and "result" in evt:
-            t = _extract_text_from_json(evt)
-            if t:
-                print(t, end="", flush=True); out.append(t); printed = True
-
-        # Si no reconocimos nada, mostramos el evento para debug
-        if not printed:
-            # comenta la línea siguiente si no quieres eventos crudos
-            # print(f"\n[evt] {json.dumps(evt, ensure_ascii=False)}\n", end="")
-            pass
-
-    print()  # salto de línea al finalizar
-    return "".join(out)
+def chat_with_agent_streaming(prompt: str, session_id: Optional[str] = None) -> None:
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    if len(session_id) < 33:
+        session_id = session_id + "x" * (33 - len(session_id))
+    
+    try:
+        response = client.converse_stream(
+            agentId=AGENT_RUNTIME_ARN,
+            sessionId=session_id,
+            input={
+                "text": prompt
+            }
+        )
+        
+        for event in response:
+            if "chunk" in event:
+                chunk = event["chunk"]
+                
+                if "bytes" in chunk:
+                    try:
+                        content = json.loads(chunk["bytes"].decode())
+                        
+                        if "result" in content and "content" in content["result"]:
+                            for item in content["result"]["content"]:
+                                if "text" in item:
+                                    print(item["text"], end="", flush=True)
+                        elif "result" in content and "message" in content["result"]:
+                            message = content["result"]["message"]
+                            if "content" in message:
+                                for item in message["content"]:
+                                    if "text" in item:
+                                        print(item["text"], end="", flush=True)
+                        else:
+                            if "text" in content:
+                                print(content["text"], end="", flush=True)
+                        continue
+                    except json.JSONDecodeError:
+                        pass
+                
+                if "contentBlockDelta" in chunk:
+                    delta = chunk["contentBlockDelta"]["delta"]
+                    if isinstance(delta, str):
+                        print(delta, end="", flush=True)
+                    elif isinstance(delta, dict) and "text" in delta:
+                        print(delta["text"], end="", flush=True)
+                    continue
+                
+                if "message" in chunk:
+                    message = chunk["message"]
+                    if "content" in message:
+                        for item in message["content"]:
+                            if "text" in item:
+                                print(item["text"], end="", flush=True)
+                        continue
+                
+                if "result" in chunk and "content" in chunk["result"]:
+                    for item in chunk["result"]["content"]:
+                        if "text" in item:
+                            print(item["text"], end="", flush=True)
+                    continue
+                
+                print(f"\n[evt] {json.dumps(chunk, ensure_ascii=False)}\n", end="")
+            
+        print()
+        
+    except Exception as e:
+        print(f"\nError en streaming: {e}")
+        return None
+    
+    return session_id
 
 def main():
-    parser = argparse.ArgumentParser(description="Chat CLI para Bedrock AgentCore")
-    parser.add_argument("--stream", action="store_true", help="Streaming (SSE)")
-    parser.add_argument("--session", default=os.getenv("AGENT_SESSION_ID") or str(uuid.uuid4()),
-                        help="ID de sesión para mantener contexto")
-    args = parser.parse_args()
-
-    # Enforce longitud mínima de sessionId (AgentCore requiere >=33)
-    session_id = args.session
-    if len(session_id) < 33:
-        session_id = f"{session_id}-{uuid.uuid4()}"
-    session_id = session_id[:64]
-
-    print(f"Chat con runtime: {AGENT_ARN}  (region={REGION})")
-    print("Comandos: /exit, /session, /new\n")
-
+    print("🤖 Chat con AgentCore RDS")
+    print("Escribe 'quit' o 'exit' para salir")
+    print("Escribe 'stream' para activar modo streaming")
+    print(f"Agente: {AGENT_NAME}")
+    print(f"ARN: {AGENT_RUNTIME_ARN[:50]}...")
+    print("-" * 50)
+    
+    session_id = None
+    streaming_mode = False
+    
     while True:
         try:
-            user = input("tú> ").strip()
-            if not user:
-                continue
-            if user in ("/exit", "/quit"):
+            user_input = input("\n👤 Usuario: ").strip()
+            
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("👋 ¡Hasta luego!")
                 break
-            if user == "/session":
-                print(f"(sessionId = {session_id})")
+            
+            if user_input.lower() == 'stream':
+                streaming_mode = not streaming_mode
+                print(f"🔄 Modo streaming: {'ON' if streaming_mode else 'OFF'}")
                 continue
-            if user == "/new":
-                session_id = str(uuid.uuid4())
-                print(f"(nueva sessionId = {session_id})")
+            
+            if not user_input:
                 continue
-
-            print("asistente> ", end="" if args.stream else "\n", flush=True)
-            text = invoke_agent(user, session_id=session_id, want_stream=args.stream)
-            if not args.stream:
-                print(text)
+            
+            print("\n🤖 Agente: ", end="", flush=True)
+            
+            if streaming_mode:
+                session_id = chat_with_agent_streaming(user_input, session_id)
+            else:
+                session_id = chat_with_agent(user_input, session_id)
+                
         except KeyboardInterrupt:
-            print()
+            print("\n\n👋 ¡Hasta luego!")
             break
         except Exception as e:
-            print(f"[error] {e}", file=sys.stderr)
+            print(f"\n❌ Error: {e}")
 
 if __name__ == "__main__":
     main()

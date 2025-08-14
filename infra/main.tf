@@ -13,10 +13,8 @@ provider "aws" {
   region = var.region
 }
 
-# --- Identidad de cuenta ---
 data "aws_caller_identity" "current" {}
 
-# --- Red mínima para Aurora ---
 resource "aws_vpc" "this" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -60,7 +58,6 @@ resource "aws_db_subnet_group" "this" {
   }
 }
 
-# SG para Aurora (Data API no necesita ingress, mantenemos mínimo/privado)
 resource "aws_security_group" "db" {
   name        = "${var.project}-db-sg"
   description = "Aurora security group"
@@ -79,7 +76,6 @@ resource "aws_security_group" "db" {
   }
 }
 
-# --- Credenciales DB en Secrets Manager ---
 resource "random_password" "db" {
   length  = 20
   special = true
@@ -100,7 +96,6 @@ resource "aws_secretsmanager_secret_version" "db_master" {
   })
 }
 
-# --- Aurora PostgreSQL Serverless v2 + Data API ---
 resource "aws_rds_cluster" "this" {
   cluster_identifier = "${var.project}-aurora"
   engine             = "aurora-postgresql"
@@ -116,10 +111,8 @@ resource "aws_rds_cluster" "this" {
   storage_encrypted   = true
   deletion_protection = false
 
-  # Data API
   enable_http_endpoint = true
 
-  # Serverless v2
   serverlessv2_scaling_configuration {
     min_capacity = var.min_acu
     max_capacity = var.max_acu
@@ -145,7 +138,6 @@ resource "aws_rds_cluster_instance" "this" {
   }
 }
 
-# --- IAM para AgentCore Runtime ---
 data "aws_iam_policy_document" "agentcore_trust" {
   version = "2012-10-17"
   statement {
@@ -181,7 +173,6 @@ resource "aws_iam_role" "agentcore_runtime" {
   }
 }
 
-# Política mínima: leer secreto y ejecutar Data API en el cluster
 data "aws_iam_policy_document" "agentcore_policy" {
   statement {
     sid    = "SecretsRead"
@@ -230,8 +221,8 @@ data "aws_iam_policy_document" "agentcore_policy" {
     actions = [
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchCheckLayerAvailability", # recomendado
-      "ecr:DescribeImages"               # recomendado
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:DescribeImages"
     ]
     resources = [
       "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/bedrock-agentcore-saldo_agent"
@@ -251,7 +242,6 @@ data "aws_iam_policy_document" "agentcore_policy" {
     )
   }
 
-  # (Opcional pero recomendado) Telemetría X-Ray para evitar 403 de trazas
   statement {
     sid     = "XRayWrites"
     effect  = "Allow"
@@ -270,7 +260,6 @@ resource "aws_iam_role_policy_attachment" "attach_agent_permissions" {
   policy_arn = aws_iam_policy.agentcore_inline.arn
 }
 
-# --- Seed de la base con 5 registros (robusto con reintentos) ---
 resource "null_resource" "seed_db" {
   depends_on = [
     aws_rds_cluster_instance.this
@@ -363,7 +352,6 @@ resource "null_resource" "seed_db" {
   }
 }
 
-# --- Despliegue del AgentCore con CLI (no-interactivo) ---
 resource "null_resource" "deploy_agentcore" {
   depends_on = [
     aws_iam_role_policy_attachment.attach_agent_permissions,
@@ -376,17 +364,13 @@ resource "null_resource" "deploy_agentcore" {
     command     = <<-EOT
       set -euo pipefail
 
-      # PATH para pipx/homebrew si se necesita
       export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-      # Región
       export AWS_REGION="${var.region}"
       export AWS_DEFAULT_REGION="${var.region}"
 
-      # Ir al directorio del agente (donde está my_agent.py y requirements.txt)
       cd "${path.module}/../agent"
 
-      # .env para el agente Python local (por si haces pruebas locales)
       cat > .env << ENV
 AWS_REGION=${var.region}
 DB_NAME=${var.db_name}
@@ -395,8 +379,6 @@ DB_SECRET_ARN=${aws_secretsmanager_secret.db_master.arn}
 BEDROCK_MODEL_ID=us.amazon.nova-micro-v1:0
 ENV
 
-      # Configure: pasamos role/region/name y alimentamos ENTER para que auto-cree ECR sin prompt
-      # Configure: sin interacción (ECR auto) y respondiendo "no" al prompt de OAuth
       printf 'no\n' | agentcore configure \
         --entrypoint my_agent.py \
         --execution-role arn:aws:iam::343075903304:role/agentcore-rds-saldo-agentcore-runtime \
@@ -405,11 +387,8 @@ ENV
         --requirements-file requirements.txt \
         --ecr auto
 
-      # Launch al cloud (toolkit construye/pushea imagen ARM64 y crea el runtime)
       agentcore launch
 
-      # Obtener estado en JSON verboso y extraer el ARN
-      # Obtener el ARN del runtime por nombre usando AWS CLI (JSON limpio)
       AGENT_NAME="saldo_agent"
       AGC_ARN=$(aws bedrock-agentcore-control list-agent-runtimes \
         --region "${var.region}" \
@@ -422,7 +401,6 @@ ENV
         exit 1
       fi
 
-      # (opcional) guarda también un JSON “bonito” para referencia
       aws bedrock-agentcore-control list-agent-runtimes --region "${var.region}" \
         --output json > ../agentcore.json || true
 
@@ -432,7 +410,6 @@ ENV
         exit 1
       fi
 
-      # Volver a la raíz del repo y escribir .env para el cliente CLI/chat
       cd "${path.module}/.."
       printf "AWS_REGION=%s\nAGENT_RUNTIME_ARN=%s\n" "${var.region}" "$AGC_ARN" > .env
       echo "AGENT_RUNTIME_ARN=$AGC_ARN"
@@ -447,13 +424,11 @@ ENV
 }
 
 locals {
-  # ARN del inference profile US Nova Micro en tu cuenta/región origen
   bedrock_inference_profile_arn = "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.amazon.nova-micro-v1:0"
 
-  # Foundation models a los que puede rutear el profile (destinos)
   bedrock_foundation_model_arns = [
     "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0",
-    "arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-micro-v1:0",  # <- NUEVO
+    "arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-micro-v1:0",
     "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-micro-v1:0",
   ]
 }
