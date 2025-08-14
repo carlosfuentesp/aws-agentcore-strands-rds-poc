@@ -264,9 +264,8 @@ resource "null_resource" "seed_db" {
       retry () {
         local tries="$1"; shift
         local delay="$1"; shift
-        local cmd="$*"
         local n=0
-        until eval "$cmd"; do
+        until "$@"; do
           n=$((n+1))
           if [ $n -ge $tries ]; then
             echo "[seed] Falló tras $tries intentos"
