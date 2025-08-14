@@ -237,6 +237,27 @@ data "aws_iam_policy_document" "agentcore_policy" {
       "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/bedrock-agentcore-saldo_agent"
     ]
   }
+
+  statement {
+    sid     = "BedrockInvokeViaInferenceProfile"
+    effect  = "Allow"
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ]
+    resources = concat(
+      [local.bedrock_inference_profile_arn],
+      local.bedrock_foundation_model_arns
+    )
+  }
+
+  # (Opcional pero recomendado) Telemetría X-Ray para evitar 403 de trazas
+  statement {
+    sid     = "XRayWrites"
+    effect  = "Allow"
+    actions = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "agentcore_inline" {
@@ -425,3 +446,14 @@ ENV
   }
 }
 
+locals {
+  # ARN del inference profile US Nova Micro en tu cuenta/región origen
+  bedrock_inference_profile_arn = "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.amazon.nova-micro-v1:0"
+
+  # Foundation models a los que puede rutear el profile (destinos)
+  bedrock_foundation_model_arns = [
+    "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0",
+    "arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-micro-v1:0",  # <- NUEVO
+    "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-micro-v1:0",
+  ]
+}
