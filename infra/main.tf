@@ -388,8 +388,22 @@ ENV
       agentcore launch
 
       # Obtener estado en JSON verboso y extraer el ARN
-      agentcore status --verbose > ../agentcore.json || true
-      AGC_ARN=$(jq -r '.. | objects | select(has("agentRuntimeArn")) | .agentRuntimeArn' ../agentcore.json | head -n1)
+      # Obtener el ARN del runtime por nombre usando AWS CLI (JSON limpio)
+      AGENT_NAME="saldo_agent"
+      AGC_ARN=$(aws bedrock-agentcore-control list-agent-runtimes \
+        --region "${var.region}" \
+        --query "agentRuntimes[?agentRuntimeName=='$AGENT_NAME'].agentRuntimeArn" \
+        --output text)
+
+      if [ -z "$AGC_ARN" ] || [ "$AGC_ARN" = "None" ]; then
+        echo "No se pudo resolver el ARN con list-agent-runtimes. Dump de ayuda:"
+        aws bedrock-agentcore-control list-agent-runtimes --region "${var.region}" --output json
+        exit 1
+      fi
+
+      # (opcional) guarda también un JSON “bonito” para referencia
+      aws bedrock-agentcore-control list-agent-runtimes --region "${var.region}" \
+        --output json > ../agentcore.json || true
 
       if [ -z "$AGC_ARN" ] || [ "$AGC_ARN" = "null" ]; then
         echo "No se pudo detectar agentRuntimeArn en agentcore.json:"
