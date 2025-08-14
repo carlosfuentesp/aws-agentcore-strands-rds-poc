@@ -80,6 +80,7 @@ cover/
 # AgentCore specific files
 agentcore.json
 .agentcore/
+.bedrock_agentcore.yaml
 
 # Environment files (contain sensitive data)
 .env

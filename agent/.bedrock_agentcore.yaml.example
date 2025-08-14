@@ -1,0 +1,30 @@
+default_agent: saldo_agent
+agents:
+  saldo_agent:
+    name: saldo_agent
+    entrypoint: my_agent.py
+    platform: linux/arm64
+    container_runtime: none
+    aws:
+      execution_role: arn:aws:iam::ACCOUNT_ID:role/agentcore-rds-saldo-agentcore-runtime
+      execution_role_auto_create: true
+      account: 'ACCOUNT_ID'
+      region: us-east-1
+      ecr_repository: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-saldo_agent
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: HTTP
+      observability:
+        enabled: true
+    bedrock_agentcore:
+      agent_id: AGENT_ID_PLACEHOLDER
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:ACCOUNT_ID:runtime/AGENT_ID_PLACEHOLDER
+      agent_session_id: SESSION_ID_PLACEHOLDER
+    codebuild:
+      project_name: bedrock-agentcore-saldo_agent-builder
+      execution_role: arn:aws:iam::ACCOUNT_ID:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-PROJECT_ID
+      source_bucket: bedrock-agentcore-codebuild-sources-ACCOUNT_ID-us-east-1
+    authorizer_configuration: null
+    oauth_configuration: null
