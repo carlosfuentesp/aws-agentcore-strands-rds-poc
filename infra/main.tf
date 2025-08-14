@@ -355,12 +355,14 @@ BEDROCK_MODEL_ID=us.amazon.nova-micro-v1:0
 ENV
 
       # Configure: pasamos role/region/name y alimentamos ENTER para que auto-cree ECR sin prompt
-      printf "\\n" | agentcore configure \
+      # Configure: sin interacción (ECR auto) y respondiendo "no" al prompt de OAuth
+      printf 'no\n' | agentcore configure \
         --entrypoint my_agent.py \
-        --execution-role ${aws_iam_role.agentcore_runtime.arn} \
-        --region ${var.region} \
+        --execution-role arn:aws:iam::343075903304:role/agentcore-rds-saldo-agentcore-runtime \
+        --region us-east-1 \
         --name saldo_agent \
-        --requirements-file requirements.txt
+        --requirements-file requirements.txt \
+        --ecr auto
 
       # Launch al cloud (toolkit construye/pushea imagen ARM64 y crea el runtime)
       agentcore launch
