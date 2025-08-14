@@ -217,6 +217,26 @@ data "aws_iam_policy_document" "agentcore_policy" {
     ]
     resources = ["*"]
   }
+  statement {
+    sid     = "EcrGetAuthToken"
+    effect  = "Allow"
+    actions = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid     = "EcrPullBedrockAgentImage"
+    effect  = "Allow"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchCheckLayerAvailability", # recomendado
+      "ecr:DescribeImages"               # recomendado
+    ]
+    resources = [
+      "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/bedrock-agentcore-saldo_agent"
+    ]
+  }
 }
 
 resource "aws_iam_policy" "agentcore_inline" {
@@ -390,3 +410,4 @@ ENV
     ts       = timestamp()
   }
 }
+
