@@ -135,6 +135,8 @@ resource "aws_rds_cluster" "this" {
   master_username = "dbmaster"
   master_password = random_password.db.result
 
+  
+
   db_subnet_group_name   = aws_db_subnet_group.this.name
   vpc_security_group_ids = [aws_security_group.db.id]
 
@@ -143,6 +145,7 @@ resource "aws_rds_cluster" "this" {
   copy_tags_to_snapshot               = true
   backup_retention_period             = 1
   iam_database_authentication_enabled = false
+  skip_final_snapshot                 = true
 
   # RDS Data API / HTTP endpoint (supported for Aurora Postgres Serverless v2/provisioned on newer engine versions)
   enable_http_endpoint = true
