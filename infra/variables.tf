@@ -5,7 +5,7 @@ variable "project" {
 
 variable "region" {
   type    = string
-  default = "us-east-1" # región con AgentCore preview
+  default = "us-east-1"
 }
 
 variable "db_name" {
@@ -20,12 +20,12 @@ variable "db_username" {
 
 variable "engine_ver" {
   type    = string
-  default = "16.9" # Aurora PG Serverless v2 compatible con Data API
+  default = "16.9"
 }
 
 variable "min_acu" {
   type    = number
-  default = 0 # escala a 0 (auto pause)
+  default = 0
 }
 
 variable "max_acu" {
