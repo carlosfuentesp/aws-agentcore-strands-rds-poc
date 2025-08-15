@@ -152,7 +152,7 @@ def main():
     parser.add_argument("--session", default=os.getenv("AGENT_SESSION_ID") or str(uuid.uuid4()),
                         help="ID de sesión para mantener contexto")
     args = parser.parse_args()
-
+    
     session_id = args.session
     if len(session_id) < 33:
         session_id = f"{session_id}-{uuid.uuid4()}"

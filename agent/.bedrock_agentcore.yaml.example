@@ -2,7 +2,7 @@ default_agent: saldo_agent
 agents:
   saldo_agent:
     name: saldo_agent
-    entrypoint: my_agent.py
+    entrypoint: agent.py
     platform: linux/arm64
     container_runtime: none
     aws:

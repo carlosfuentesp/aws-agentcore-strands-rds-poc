@@ -112,7 +112,7 @@ pip install -r requirements.txt
 ```bash
 # Desde el directorio agent/
 agentcore configure \
-  --entrypoint my_agent.py \
+  --entrypoint agent.py \
   --execution-role arn:aws:iam::ACCOUNT_ID:role/agentcore-rds-saldo-agentcore-runtime \
   --region us-east-1 \
   --name saldo_agent \
@@ -120,15 +120,20 @@ agentcore configure \
   --ecr auto
 
 # Lanzar el agente
-agentcore launch
+agentcore launch \
+  --env AWS_REGION=$REGION \
+  --env DB_NAME=$DB_NAME \
+  --env AURORA_CLUSTER_ARN="$CLUSTER_ARN" \
+  --env DB_SECRET_ARN="$SECRET_ARN" \
+  --env BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
 ```
 
 ## 🧪 Pruebas desde Terminal
 
-### Opción 1: Chat TUI Interactivo
+### Opción 1: Chat Interactivo
 ```bash
 cd agent/
-python chat_tui.py
+python chat.py
 ```
 
 **Comandos de ejemplo:**
@@ -163,22 +168,6 @@ aws secretsmanager get-secret-value \
 # Conectar (requiere acceso a la VPC)
 psql -h CLUSTER_ENDPOINT -U dbmaster -d bankdb
 ```
-
-## 🔒 Configuración de Seguridad
-
-### Archivos Sensibles (NO subir a Git)
-- `infra/terraform.tfstate` - Estado de Terraform con información de AWS
-- `infra/terraform.tfstate.backup` - Backup del estado
-- `infra/.terraform.lock.hcl` - Lock de dependencias
-- `agentcore.json` - Configuración del agente
-- `agent/.bedrock_agentcore.yaml` - Configuración específica del agente
-- `.env` - Variables de entorno locales
-
-### Políticas de Seguridad Implementadas
-- **VPC privada** - Base de datos no accesible desde internet
-- **IAM mínimo** - Solo permisos necesarios para el agente
-- **Encriptación** - Datos en tránsito y en reposo
-- **Secrets Manager** - Credenciales gestionadas de forma segura
 
 ## 🧹 Limpieza y Destrucción
 
